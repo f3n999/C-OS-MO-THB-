@@ -1,22 +1,20 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
+# Binaires et objets compilés
+*.o
+*.so
+*.a
+*.out
+
+# Fichiers de l'éditeur
+*.swp
+*.swo
+*~
+
+# Fichiers de build
+/build/
+/bin/
+
+# Fichiers spécifiques à certains IDEs
 .vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-file
-*.flf
-#Test results file
-TestResults.xml
+.idea/
+*.cproject
+*.project
