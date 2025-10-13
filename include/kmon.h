@@ -1,12 +1,6 @@
-#ifndef __KMON_H__
-#define __KMON_H__
+#ifndef KMON_H
+#define KMON_H
 
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/kprobes.h>
-#include <linux/syscalls.h>
-#include <linux/kallsyms.h>
-#include <linux/version.h>
+#define DRV_NAME "kmon"
 
-#endif /* __KMON_H__ */
+#endif // KMON_H

@@ -1,47 +1,66 @@
-# This Makefile is used to build the kmon kernel module.
+# Makefile racine (out-of-tree)
+KDIR ?= /lib/modules/$(shell uname -r)/build
+PWD  := $(shell pwd)
 
-# The name of the module object file.
-# The 'obj-m' variable tells the kernel build system to build kmon.o as a loadable module.
-obj-m := kmon.o
+obj-m += kmon.o
+kmon-y := src/kmon.o
 
-# The source file(s) for the kmon module.
-# The build system will compile kmon.c to produce kmon.o.
-kmon-objs := src/kmon.o
-
-# Kernel-specific build flags.
-# -Werror: Treat all warnings as errors. This enforces a high standard of code quality.
-# -Wall: Enable all standard compiler warnings.
-# -Wextra: Enable extra compiler warnings beyond -Wall.
-# -std=c99: Use the C99 standard for compilation.
-# -g: Include debugging information.
-# -fno-pie: Disable Position-Independent Executable generation, which can be problematic for kernel modules.
+# CFLAGS pour notre module
+# -Werror: Traite tous les avertissements comme des erreurs.
+# -Wall: Active la plupart des avertissements.
+# -Wextra: Active des avertissements supplémentaires.
+# -pedantic: Exige une conformité stricte à la norme C.
+# -std=c99: Utilise la norme C99.
+# -g: Inclut les informations de débogage.
+# -fno-pie: Désactive la génération de code indépendant de la position (PIE), souvent nécessaire pour les modules noyau.
 EXTRA_CFLAGS := -g -Wall -Wextra -Werror -pedantic -std=c99 -fno-pie
 
-# The directory where the kernel headers and build system are located.
-# `uname -r` gets the current running kernel version.
-KDIR := /lib/modules/$(shell uname -r)/build
-
-# Default target. This is what 'make' will do if no specific target is given.
-all:
+# Cible par défaut pour compiler le module
+all: modules
+modules:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
-# Target to clean up the build directory.
+# Cible pour nettoyer les fichiers générés
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	@echo "  CLEANING up build files..."
+	make -C $(KDIR) M=$(PWD) clean
+	$(RM) tools/kmon_trigger tools/kmonctl
 
-# Target to load the module into the kernel.
-# Requires root privileges.
-load: all
-	@echo "  LOADING kernel module kmon.ko..."
-	sudo insmod ./kmon.ko
-	@echo "  Module loaded. Use 'dmesg' to see kernel messages and 'lsmod | grep kmon' to verify."
+# Cibles pour les outils en espace utilisateur
+TOOLS   := tools/kmon_trigger tools/kmonctl
+CFLAGS_tools := -O2 -Wall
 
-# Target to unload the module from the kernel.
-# Requires root privileges.
-unload:
-	@echo "  UNLOADING kernel module kmon..."
-	sudo rmmod kmon
-	@echo "  Module unloaded."
+tools: $(TOOLS)
 
-# Declare phony targets to prevent conflicts with files of the same name.
-.PHONY: all clean load unload
+tools/kmon_trigger: tools/kmon_trigger.c
+	$(CC) $(CFLAGS_tools) -o $@ $<
+
+tools/kmonctl: tools/kmonctl.c
+	$(CC) $(CFLAGS_tools) -o $@ $<
+
+# Cible pour installer le module dans le répertoire des modules du système
+install:
+	install -D -m0644 kmon.ko /lib/modules/$(shell uname -r)/extra/kmon.ko
+	depmod -a
+
+# Cible pour configurer la persistance au démarrage et la journalisation
+persist: all install enable-boot enable-options enable-logs
+
+enable-boot:
+	@echo "kmon" > /etc/modules-load.d/kmon.conf
+	@echo "[enable-boot] kmon sera chargé au boot"
+
+# Paramètres par défaut pour le module
+MODULE_MATCH ?= "passwd,shadow"
+MODULE_SYM   ?= "__x64_sys_openat"
+
+enable-options:
+	@echo 'options kmon match=$(MODULE_MATCH) sym=$(MODULE_SYM)' > /etc/modprobe.d/kmon.conf
+	@echo "[enable-options] /etc/modprobe.d/kmon.conf -> match=$(MODULE_MATCH) sym=$(MODULE_SYM)"
+
+enable-logs:
+	@mkdir -p /etc/rsyslog.d
+	@printf ':msg, contains, "kmon:" -/var/log/kmon.log\\n& stop\\n' > /etc/rsyslog.d/50-kmon.conf
+	@echo "[enable-logs] /var/log/kmon.log recevra les lignes 'kmon:'"
+
+.PHONY: all clean tools install persist enable-boot enable-options enable-logs

@@ -1,20 +1,11 @@
-# Binaires et objets compilés
 *.o
-*.so
-*.a
-*.out
-
-# Fichiers de l'éditeur
-*.swp
-*.swo
-*~
-
-# Fichiers de build
-/build/
-/bin/
-
-# Fichiers spécifiques à certains IDEs
-.vscode/
-.idea/
-*.cproject
-*.project
+*.ko
+*.mod
+*.mod.*
+Module.symvers
+modules.order
+*.cmd
+*.dwo
+*.tmp
+tools/kmon_trigger
+tools/kmonctl
