@@ -13,7 +13,8 @@ kmon-y := src/kmon.o
 # -std=c99: Utilise la norme C99.
 # -g: Inclut les informations de débogage.
 # -fno-pie: Désactive la génération de code indépendant de la position (PIE), souvent nécessaire pour les modules noyau.
-EXTRA_CFLAGS := -g -Wall -Wextra -Werror -pedantic -std=c99 -fno-pie
+# -fanalyzer: Active l'analyseur statique GCC pour détecter les bugs potentiels.
+EXTRA_CFLAGS := -g -Wall -Wextra -Werror -pedantic -std=c99 -fno-pie -fanalyzer
 
 # Cible par défaut pour compiler le module
 all: modules
