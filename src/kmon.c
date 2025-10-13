@@ -23,6 +23,7 @@ module_param(sym, charp, 0444);
 MODULE_PARM_DESC(sym, "Symbole de syscall à kprober (__x64_sys_openat ou __x64_sys_openat2)");
 
 static struct kprobe kp;
+static char tokens[256];
 
 /*
  * strsep - C'est une fonction de bibliothèque standard, mais pas toujours
@@ -48,12 +49,11 @@ static char *k_strsep(char **s, const char *ct)
 /* Test si path contient au moins un token CSV de 'match' */
 static bool path_matches(const char *path)
 {
-    char local_tokens[256];
-    char *p_tokens = local_tokens;
+    char *p_tokens = tokens;
     char *token;
 
-    // Copier d'abord, puis traiter les tokens (évite la race condition)
-    strlcpy(local_tokens, match, sizeof(local_tokens));
+    // strsep modifie la chaîne, donc on utilise une copie
+    strlcpy(tokens, match, sizeof(tokens));
 
     while ((token = k_strsep(&p_tokens, ",")) != NULL) {
         if (*token == '\0') {
@@ -66,7 +66,7 @@ static bool path_matches(const char *path)
     return false;
 }
 
-/* Récupère l'argument "const char __user *filename" selon le syscall choisi */
+/* Récupère l’argument “const char __user *filename” selon le syscall choisi */
 static const char __user *get_user_filename(const struct pt_regs *regs)
 {
 #if defined(__x86_64__)
@@ -95,23 +95,17 @@ static int handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
     char path[PATH_MAX];
     const char __user *filename_user_ptr = get_user_filename(regs);
-    long copy_result;
 
     if (!filename_user_ptr) {
         return 0;
     }
 
     // Copie sécurisée du nom de fichier depuis l'espace utilisateur
-    copy_result = strncpy_from_user(path, filename_user_ptr, sizeof(path));
-    if (copy_result < 0) {
-        pr_err("%s: Failed to copy filename from user space (error: %ld)\n", 
-               DRV_NAME, copy_result);
-        return 0;
-    }
-
-    if (path_matches(path)) {
-        pr_info("%s: Access to '%s' by process '%s' (PID: %d)\n",
-                DRV_NAME, path, current->comm, current->pid);
+    if (strncpy_from_user(path, filename_user_ptr, sizeof(path)) > 0) {
+        if (path_matches(path)) {
+            pr_info("%s: Access to '%s' by process '%s' (PID: %d)\n",
+                    DRV_NAME, path, current->comm, current->pid);
+        }
     }
 
     return 0;
@@ -120,17 +114,12 @@ static int handler_pre(struct kprobe *p, struct pt_regs *regs)
 static int register_probe(const char *symbol)
 {
     int ret;
-
-    // Initialiser le kprobe avant utilisation
-    memset(&kp, 0, sizeof(kp));
-
     kp.symbol_name = symbol;
-    kp.pre_handler = handler_pre;
+    kp.pre_handler = pre_handler;
 
     ret = register_kprobe(&kp);
     if (ret < 0) {
-        pr_err("%s: register_kprobe failed for symbol %s, returned %d\n", 
-               DRV_NAME, symbol, ret);
+        pr_err("%s: register_kprobe failed for symbol %s, returned %d\n", DRV_NAME, symbol, ret);
         return ret;
     }
     pr_info("%s: Planted kprobe at %p on symbol %s\n", DRV_NAME, kp.addr, symbol);
@@ -152,7 +141,7 @@ static int __init kmon_init(void)
             ret = register_probe("__x86_64_sys_openat");
         }
         // Fallback vers do_sys_openat2 si le premier échoue
-        else if (strcmp(sym, "__x86_64_sys_openat") == 0) {
+        else if(strcmp(sym, "__x86_64_sys_openat") == 0) {
             pr_info("%s: Retrying with do_sys_openat2\n", DRV_NAME);
             ret = register_probe("do_sys_openat2");
         }

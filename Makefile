@@ -1,79 +1,66 @@
-# ==== Kbuild wrapper + Kbuild rules (un seul fichier) =========================
-# Utilisation :
-#   make              # construit kmon.ko
-#   make clean        # nettoie
-#   make load         # insmod (essaie openat puis fallback openat2)
-#   make unload       # rmmod
-#   make install      # installe le .ko dans /lib/modules/.../extra + depmod
-#
-# Variables utiles (optionnelles) :
-#   KDIR=/chemin/vers/headers      # si /lib/modules/$(uname -r)/build n’existe pas
-#   CC=clang LLVM=1 LLVM_IAS=1     # si tu veux clanger
-#
-# Remarques :
-# - On force GCC_PLUGINS_CFLAGS= vide pour éviter les plugins GCC foireux (Alpine).
-# - NE PAS forcer -std=c99 etc. Le noyau gère ses propres flags.
-# ============================================================================
-
-# ---------- Partie Kbuild (appelée par le noyau) ----------
-ifneq ($(KERNELRELEASE),)
-
-# Déclare le module à construire : kmon.ko à partir de src/kmon.c
-obj-m    += kmon.o
-kmon-y   := src/kmon.o
-
-# Tu peux placer ici des warning-tweaks sûrs côté kernel si besoin :
-# ccflags-y += -Wno-maybe-uninitialized
-
-else
-# ---------- Partie "wrapper" (appelée par l’utilisateur) ----------
+# Makefile racine (out-of-tree)
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
-# Affiche un message propre si les headers ne sont pas là
-define _no_headers
-	@echo "ERROR: headers noyau introuvables pour $$(uname -r) :" 1>&2 ; \
-	echo " - $(KDIR) n'existe pas." 1>&2 ; \
-	echo "Installe d'abord les headers :" 1>&2 ; \
-	echo "  Debian/Ubuntu/Kali : sudo apt update && sudo apt install linux-headers-$$(uname -r) || sudo apt install linux-headers-amd64" 1>&2 ; \
-	echo "  Alpine :             sudo apk add --no-cache linux-virt-dev build-base" 1>&2 ; \
-	exit 2
-endef
+obj-m += kmon.o
+kmon-y := src/kmon.o
 
-.PHONY: all modules clean load unload install reinstall
+# CFLAGS pour notre module
+# -Werror: Traite tous les avertissements comme des erreurs.
+# -Wall: Active la plupart des avertissements.
+# -Wextra: Active des avertissements supplémentaires.
+# -pedantic: Exige une conformité stricte à la norme C.
+# -std=c99: Utilise la norme C99.
+# -g: Inclut les informations de débogage.
+# -fno-pie: Désactive la génération de code indépendant de la position (PIE), souvent nécessaire pour les modules noyau.
+EXTRA_CFLAGS := -g -Wall -Wextra -Werror -pedantic -std=c99 -fno-pie
 
+# Cible par défaut pour compiler le module
 all: modules
 modules:
-	@if [ ! -e "$(KDIR)/Makefile" ]; then $(call _no_headers); fi
-	@echo "[build] KDIR=$(KDIR)"
-	$$(MAKE) -C "$(KDIR)" M="$(PWD)" \
-		GCC_PLUGINS_CFLAGS= \
-		CC="$(CC)" LLVM="$(LLVM)" LLVM_IAS="$(LLVM_IAS)" \
-		modules
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
+# Cible pour nettoyer les fichiers générés
 clean:
-	-@$(MAKE) -C "$(KDIR)" M="$(PWD)" clean >/dev/null 2>&1 || true
-	@rm -rf .tmp_versions Module.symvers modules.order \
-	        kmon.mod kmon.mod.c kmon.mod.o kmon.o kmon.ko \
-	        .*.cmd *.o *.ko *.mod *.mod.c
+	@echo "  CLEANING up build files..."
+	make -C $(KDIR) M=$(PWD) clean
+	$(RM) tools/kmon_trigger tools/kmonctl
 
-# Charge le module avec paramètres par défaut (openat -> fallback openat2)
-load: modules
-	-@sudo rmmod kmon 2>/dev/null || true
-	@sudo insmod ./kmon.ko match="passwd,shadow" 2>/dev/null || \
-	 sudo insmod ./kmon.ko match="passwd,shadow" sym="__x64_sys_openat2"
-	@echo "[ok] kmon chargé. Paramètres actuels:"
-	@-cat /sys/module/kmon/parameters/match 2>/dev/null || true
-	@-cat /sys/module/kmon/parameters/sym   2>/dev/null || true
+# Cibles pour les outils en espace utilisateur
+TOOLS   := tools/kmon_trigger tools/kmonctl
+CFLAGS_tools := -O2 -Wall
 
-unload:
-	@sudo rmmod kmon && echo "[ok] kmon déchargé" || echo "[info] déjà déchargé ?"
+tools: $(TOOLS)
 
-install: modules
-	@sudo install -D -m0644 ./kmon.ko /lib/modules/$$(uname -r)/extra/kmon.ko
-	@sudo depmod -a
-	@echo "[ok] installé -> /lib/modules/$$(uname -r)/extra/kmon.ko (pense à modprobe kmon)"
+tools/kmon_trigger: tools/kmon_trigger.c
+	$(CC) $(CFLAGS_tools) -o $@ $<
 
-reinstall: unload clean all install
+tools/kmonctl: tools/kmonctl.c
+	$(CC) $(CFLAGS_tools) -o $@ $<
 
-endif
+# Cible pour installer le module dans le répertoire des modules du système
+install:
+	install -D -m0644 kmon.ko /lib/modules/$(shell uname -r)/extra/kmon.ko
+	depmod -a
+
+# Cible pour configurer la persistance au démarrage et la journalisation
+persist: all install enable-boot enable-options enable-logs
+
+enable-boot:
+	@echo "kmon" > /etc/modules-load.d/kmon.conf
+	@echo "[enable-boot] kmon sera chargé au boot"
+
+# Paramètres par défaut pour le module
+MODULE_MATCH ?= "passwd,shadow"
+MODULE_SYM   ?= "__x64_sys_openat"
+
+enable-options:
+	@echo 'options kmon match=$(MODULE_MATCH) sym=$(MODULE_SYM)' > /etc/modprobe.d/kmon.conf
+	@echo "[enable-options] /etc/modprobe.d/kmon.conf -> match=$(MODULE_MATCH) sym=$(MODULE_SYM)"
+
+enable-logs:
+	@mkdir -p /etc/rsyslog.d
+	@printf ':msg, contains, "kmon:" -/var/log/kmon.log\\n& stop\\n' > /etc/rsyslog.d/50-kmon.conf
+	@echo "[enable-logs] /var/log/kmon.log recevra les lignes 'kmon:'"
+
+.PHONY: all clean tools install persist enable-boot enable-options enable-logs

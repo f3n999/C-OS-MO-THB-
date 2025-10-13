@@ -44,7 +44,7 @@ make clean          # (optionnel) remet à zéro
 make                # construit kmon.ko
 ```
 
-Vous devriez voir un fichier `kmon.ko` à la racine du projet.
+Tu dois voir à la fin un fichier `kmon.ko` à la racine du projet.
 
 > **Avertissements** :
 > - `warning: the compiler differs from the one used to build the kernel`: C'est normal sur certains environnements comme Alpine.
@@ -54,7 +54,7 @@ Vous devriez voir un fichier `kmon.ko` à la racine du projet.
 
 ## 4) Charger le module à la main (test rapide)
 
-Le module accepte deux paramètres :
+Deux paramètres principaux :
 
 *   `match`: Une chaîne de caractères contenant les noms de fichiers à surveiller, séparés par des virgules (ex: `"passwd,shadow"`).
 *   `sym`: Le symbole du syscall à intercepter (ex: `__x64_sys_openat` ou `__x64_sys_openat2`).
@@ -118,7 +118,7 @@ tail -f /var/log/kmon.log
 
 ---
 
-## 6) (Optionnel) Rendre l'usage « confortable » (Installation & Persistance)
+## 6) (Optionnel) Rendre l’usage « confortable » (Installation & Persistance)
 
 Le `Makefile` inclut des cibles pour automatiser l'installation et la configuration.
 
