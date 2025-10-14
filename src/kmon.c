@@ -1,9 +1,11 @@
-include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/kprobes.h>     // kprobe/kretprobe
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kprobes.h>
+#include <linux/syscalls.h>
+#include <linux/kallsyms.h>
+#include <linux/version.h>
 #include <linux/uaccess.h>
-#include <linux/limits.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
@@ -11,7 +13,6 @@ include <linux/module.h>
 #include <linux/timekeeping.h>  // ktime_get_real_ts64
 #include <linux/time64.h>       // time64_to_tm
 #include <linux/ptrace.h>       // regs_return_value()
-#include <linux/version.h>
 #include <linux/types.h>
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
@@ -32,7 +33,7 @@ module_param_string(match, match, sizeof(match), 0644);
 MODULE_PARM_DESC(match, "Mots-clés CSV (ex: \"passwd,shadow\")");
 
 static char sym[64] = "";
-module_param_string(sym, sym, sizeof(sym), 0644);
+module_param_string(sym, sym, sizeof(sym), 0444);
 MODULE_PARM_DESC(sym, "Symbole cible unique (\"__x64_sys_openat\" ou \"__x64_sys_openat2\"). Par défaut, les deux.");
 
 static bool log_all = false;
@@ -74,14 +75,14 @@ static bool match_path(const char *path)
 	if (!path || !*path || nwords == 0)
 		return false;
 	for (i = 0; i < nwords; i++) {
-		if (strnstr(path, words[i], PATH_MAX))
+		if (strstr(path, words[i]))
 			return true;
 	}
 	return false;
 }
 
 /* --- extraction d'arguments suivant l'arch --- */
-#if defined(CONFIG_X86_64)
+#if defined(__x86_64__)
 /* openat(dirfd=di, filename=si, flags=dx, mode=r10) */
 # define AT_FILENAME(regs) ((const char __user *)(regs->si))
 # define AT_FLAGS(regs)    ((int)(regs->dx))
@@ -89,7 +90,7 @@ static bool match_path(const char *path)
 /* openat2(dirfd=di, filename=si, how*=dx, size=r10) */
 # define AT2_FILENAME(regs) ((const char __user *)(regs->si))
 # define AT2_HOWPTR(regs)   ((const void __user *)(regs->dx))
-#elif defined(CONFIG_ARM64)
+#elif defined(__aarch64__)
 /* openat: x0=dirfd, x1=filename, x2=flags, x3=mode */
 # define AT_FILENAME(regs)  ((const char __user *)(regs->regs[1]))
 # define AT_FLAGS(regs)     ((int)(regs->regs[2]))
@@ -172,7 +173,7 @@ static int entry_openat2(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	d->path = NULL;
 
-	ktime_get_real_ts64(&d->ts_entry);
+	ktime_get_real_real_ts64(&d->ts_entry);
 
 	/* défauts si open_how illisible */
 	d->flags = 0;

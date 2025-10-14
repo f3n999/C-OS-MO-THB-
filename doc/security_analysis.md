@@ -2,61 +2,63 @@
 
 ## 1. Overview
 
-The `kmon` kernel module is designed to monitor file access by hooking the `do_sys_openat2` or `__x86_64_sys_openat` system calls using `kprobes`. Its primary purpose is to detect and log attempts to access sensitive files, such as `/etc/shadow`. This document outlines the potential security risks associated with this module and the measures taken to mitigate them.
+The `kmon` kernel module is designed to monitor file access by dynamically placing kprobes on file-opening syscalls like `openat` and `openat2`. Its primary goal is to log attempts to access sensitive files, which are defined by a comma-separated list of keywords.
+
+This document outlines potential security considerations and the mitigation strategies implemented in the module.
 
 ## 2. Potential Attack Vectors & Mitigations
 
-### 2.1. Kernel-Level Code Execution / Panic
+### 2.1. Kernel-Level Code Execution / System Instability
 
 **Risk:**
-Any bug within a kernel module can be catastrophic, leading to a system crash (kernel panic) or, in the worst case, a security vulnerability that could be exploited for privilege escalation. Specific risks include:
-- **Null Pointer Dereference:** If `kallsyms` fails to find the address of the target symbol, the `kprobe.addr` would be NULL, causing a panic upon registration.
-- **Buffer Overflow:** When copying the filename from user space, a simple `strcpy` could lead to a buffer overflow if the user-provided path is longer than the kernel buffer.
+As a kernel module, any bug, such as a null pointer dereference or buffer overflow, can lead to a system-wide crash (kernel panic). An attacker could potentially exploit such a flaw to escalate privileges.
+
+*   **Dangling Pointers/Memory Leaks:** If memory allocated with `kmalloc` is not freed, it can lead to memory leaks. If a kprobe handler accesses data that has already been freed, it can cause a crash.
+*   **Buffer Overflows:** Copying data from user space (e.g., a filename) without proper size checks can overflow kernel buffers.
 
 **Mitigation:**
-- **Error Handling:** The `kmon_init` function explicitly checks the return value of `register_kprobe`. If registration fails, it attempts a fallback to another common syscall name (`__x86_64_sys_openat2` or `do_sys_openat`) before giving up. This increases robustness across different kernel versions. If all attempts fail, it returns an error, preventing the module from loading in a faulty state.
-- **Strict Compilation Flags:** The `Makefile` is configured with `-Wextra -Werror -fanalyzer -pedantic -std=c99`. This enforces a high standard of code quality, treating all warnings as errors and preventing the compilation of potentially unsafe code. The `-fanalyzer` flag enables GCC's static analysis to find potential issues at compile time.
-- **Safe String Handling:** The `strncpy_from_user` function is used to copy the filename from user space to a fixed-size kernel buffer. This function is safer than `strcpy` because it includes a size limit (`sizeof(path)`), preventing buffer overflows. It also handles faults if the user-space memory is invalid. The `strlcpy` function is used for copying the module parameters, which is a safer alternative to `strcpy`.
+*   **Safe Memory Management:** The `kmon_data` structure is allocated and freed for each system call via the `kretprobe` mechanism, minimizing the risk of use-after-free errors. The `match_buf` is allocated with `kstrdup` and freed in `kmon_exit`.
+*   **Safe String Handling:** `strncpy_from_user` is used to copy filenames from user space. This function is designed to be safe, as it checks for valid user-space addresses and prevents buffer overflows by respecting the provided size limit.
+*   **Error Handling:** The `kmon_init` function includes robust checks. It verifies the success of `register_kretprobe` and attempts to fall back to an alternative syscall if the primary one fails. If no probe can be placed, the module fails to load, preventing it from running in a faulty state.
+*   **Strict Compilation Flags:** The `Makefile` uses `-Wextra` and `-Werror`, which turns a wide range of potential coding errors into compilation failures, enforcing a higher standard of code safety.
 
 ### 2.2. Information Disclosure
 
 **Risk:**
-The module logs the process name and PID of any process accessing sensitive files. This information is written to the kernel log buffer, which can be read via the `dmesg` command. If an unprivileged user can read these logs, it could reveal information about system activity.
+The module logs the process name, PID, UID, GID, and the full path of accessed files to the kernel log buffer (`dmesg`). If an unprivileged user can read these logs, it could leak sensitive information about system activity or user actions.
 
 **Mitigation:**
-- **Restricted `dmesg` Access:** On modern Linux systems, access to `dmesg` is typically restricted to the `root` user by default (via the `dmesg_restrict=1` sysctl setting). This is a system-level configuration that we rely on to protect the log data.
-- **Controlled Logging:** The module only logs access to files whose paths contain specific keywords (e.g., "passwd", "shadow"). It does not log all file access, minimizing the amount of potentially sensitive information being recorded.
+*   **Restricted `dmesg` Access:** By default, modern Linux kernels restrict access to `dmesg` to privileged users (root). The module relies on this standard OS-level security feature.
+*   **Controlled Logging:** The module's logging is controlled by the `log_all=false` parameter by default, meaning it only logs accesses to files matching the `match` parameter. This reduces noise and potential information leaks.
+*   **Optional Syslog Forwarding:** The `Makefile` provides a `persist` target that configures `rsyslog` to write `kmon` logs to a separate file (`/var/log/kmon.log`). File permissions on this log file can be further restricted to limit access.
 
 ### 2.3. Denial of Service (DoS)
 
 **Risk:**
-An attacker with local access could repeatedly and rapidly try to open files with names matching the monitored keywords. This would trigger the kprobe handler for each attempt, potentially flooding the kernel logs (`dmesg`) and consuming CPU resources, leading to a system-wide slowdown or making the logs unusable.
+A malicious local user could trigger a high volume of `open` or `openat` calls on files containing the monitored keywords. This could flood the kernel log buffer, consuming significant CPU resources in the kprobe handler and potentially slowing down the entire system.
 
 **Mitigation:**
-- **Minimal Probe Handler Logic:** The code within the `handler_pre` function is designed to be as efficient as possible. It performs a quick string copy and comparison.
-- **Future Enhancement (Rate-Limiting):** For a production-level tool, a rate-limiting mechanism could be implemented. This would involve using a data structure (like a hash table of recent offenders) to track the frequency of access attempts from specific PIDs or users and suppressing log messages if a certain threshold is exceeded. This is not implemented in the current version for simplicity.
+*   **Minimal Probe Handler Logic:** The `entry_handler` and `ret_handler` functions are designed to be as lightweight as possible. They perform essential checks and data collection quickly and defer the more expensive string formatting and logging to the return path.
+*   **Future Enhancement - Rate Limiting:** For a more robust production environment, a rate-limiting mechanism could be added. This would involve tracking the frequency of log messages per process and temporarily disabling logging for a specific process if it exceeds a defined threshold. This is not implemented in the current version to maintain simplicity.
 
 ## 4. Assembly Code Analysis (`objdump`)
 
-To demonstrate a deeper understanding of the compiled code and verify the compiler's output, we can analyze the assembly of the `kmon.o` object file.
+A key part of understanding kernel-level code is to inspect the machine code generated by the compiler. This helps verify that the C code translates to the expected low-level operations.
 
-**How to Perform the Analysis:**
-1.  Navigate to the project directory.
-2.  Compile the module using the provided `Makefile`: `make`
-3.  Use `objdump` to disassemble the compiled object file:
-    ```bash
-    objdump -d -S kmon.o
-    ```
+**Command:**
+```bash
+objdump -d -S kmon.o
+```
 
 **What to Look For:**
-- **Function Prologue/Epilogue:** Examine the `kmon_init` and `kmon_exit` functions to see how the stack frame is set up and torn down.
-- **`handler_pre` Logic:**
-    - Verify that the `regs->si` register (for x86_64) or `regs->regs[1]` (for arm64) is correctly accessed to get the filename pointer.
-    - Inspect the call to `strncpy_from_user` and `strstr` to see how they are translated into assembly.
-    - Confirm there are no unexpected or inefficient instructions generated by the compiler.
-- **Security:** Look for any potential vulnerabilities at the assembly level, such as incorrect use of registers or stack corruption, that might have been missed in the C code review. This low-level analysis is crucial for security-sensitive code like a kernel module.
+1.  **Syscall Argument-Passing Convention:**
+    *   For the `x86-64` architecture, arguments are passed via registers: `%rdi`, `%rsi`, `%rdx`, `%r10`, etc.
+    *   The `get_user_filename` function correctly retrieves the filename pointer from the `%rsi` register for both `openat` and `openat2`.
+    *   The `entry_openat` handler correctly reads flags from `%rdx` and mode from `%r10`.
+    *   The `entry_openat2` handler correctly reads the `struct open_how` pointer from `%rdx`.
+2.  **Function Calls:**
+    *   Verify the calls to `strncpy_from_user`, `kstrdup`, `pr_info`, etc., are present and use the correct arguments.
+3.  **Kernel/User Space Boundary:**
+    *   The use of `strncpy_from_user` is critical. Examining its implementation in the assembly would show the necessary checks to prevent accessing invalid user memory.
 
-## 5. Conclusion
-
-The `kmon` module, while simple, is designed with security in mind. By using strict compilation flags, safe memory handling functions, and a limited scope of operation, the primary risks are mitigated. Further enhancements, such as rate-limiting, could be added to improve its robustness against DoS attacks. The use of `kprobes` is a powerful but potentially risky technique, and careful implementation is essential for system stability.
-The current implementation provides a solid foundation for a file access monitoring tool.
+This low-level analysis confirms the code's behavior and helps identify potential security vulnerabilities that might be missed at the source-code level.
